@@ -57,9 +57,11 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.model.TvDevice
 import com.example.model.TvRemoteKey
 import com.example.ui.components.TvHeader
 import com.example.ui.dialogs.DevicePickerSheet
+import com.example.ui.dialogs.DiagnosticDialog
 import com.example.ui.dialogs.TvSetupHelpDialog
 import com.example.ui.screens.AppsScreen
 import com.example.ui.screens.FilesScreen
@@ -116,6 +118,10 @@ fun MainAppScreen(viewModel: TvRemoteViewModel) {
 
     val showDeviceSheet by viewModel.showDeviceSheet.collectAsStateWithLifecycle()
     val showHelpDialog by viewModel.showHelpDialog.collectAsStateWithLifecycle()
+    val showDiagnosticDialog by viewModel.showDiagnosticDialog.collectAsStateWithLifecycle()
+    val diagnosticResult by viewModel.diagnosticResult.collectAsStateWithLifecycle()
+    val isDiagnosticLoading by viewModel.isDiagnosticLoading.collectAsStateWithLifecycle()
+    val isWaitingForAuth by viewModel.isWaitingForAuth.collectAsStateWithLifecycle()
     val toastMessage by viewModel.toastMessage.collectAsStateWithLifecycle()
 
     val mouseSensitivity by viewModel.mouseSensitivity.collectAsStateWithLifecycle()
@@ -322,7 +328,28 @@ fun MainAppScreen(viewModel: TvRemoteViewModel) {
                 onSelectDevice = { viewModel.connectToDevice(it) },
                 onAddManualDevice = { name, ip, port -> viewModel.addManualDevice(name, ip, port) },
                 onDismiss = { viewModel.toggleDeviceSheet(false) },
-                onShowHelp = { viewModel.toggleHelpDialog(true) }
+                onShowHelp = { viewModel.toggleHelpDialog(true) },
+                onDiagnose = { viewModel.runDiagnostic(it) }
+            )
+        }
+
+        // Diagnostic & Connection Troubleshooting Dialog
+        if (showDiagnosticDialog) {
+            DiagnosticDialog(
+                result = diagnosticResult,
+                isLoading = isDiagnosticLoading,
+                onRetry = { viewModel.runDiagnostic(it) },
+                onConnectIfReady = { ip ->
+                    val dev = discoveredDevices.find { it.ipAddress == ip } ?: TvDevice(
+                        id = "lan_$ip",
+                        name = "Google TV ($ip)",
+                        ipAddress = ip,
+                        port = 5555,
+                        model = "Google TV"
+                    )
+                    viewModel.connectToDevice(dev)
+                },
+                onDismiss = { viewModel.dismissDiagnosticDialog() }
             )
         }
 

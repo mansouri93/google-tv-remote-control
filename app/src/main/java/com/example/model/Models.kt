@@ -10,7 +10,30 @@ data class TvDevice(
     val isConnected: Boolean = false,
     val latencyMs: Long = 12L,
     val isFavorite: Boolean = false,
-    val isSimulated: Boolean = false
+    val isSimulated: Boolean = false,
+    val isAdbOpen: Boolean = false,
+    val isCastOpen: Boolean = false,
+    val isRemoteV2Open: Boolean = false,
+    val isSaved: Boolean = false
+)
+
+enum class DiagnosticStatus {
+    READY_TO_CONNECT,
+    ADB_DEBUGGING_DISABLED,
+    AUTH_REQUIRED_ON_TV,
+    OFFLINE
+}
+
+data class TvDiagnosticResult(
+    val ip: String,
+    val isReachable: Boolean,
+    val isAdbOpen: Boolean,
+    val isCastOpen: Boolean,
+    val isRemoteV2Open: Boolean,
+    val latencyMs: Long = -1L,
+    val tvName: String = "Google TV",
+    val tvModel: String = "Google TV / Android TV",
+    val status: DiagnosticStatus = DiagnosticStatus.OFFLINE
 )
 
 data class TvApp(

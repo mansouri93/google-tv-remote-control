@@ -51,6 +51,21 @@ class TvAdbClient {
     private val _actionLogs = MutableSharedFlow<String>(extraBufferCapacity = 50)
     val actionLogs: SharedFlow<String> = _actionLogs.asSharedFlow()
 
+    private val _diagnosticResult = MutableStateFlow<com.example.model.TvDiagnosticResult?>(null)
+    val diagnosticResult: StateFlow<com.example.model.TvDiagnosticResult?> = _diagnosticResult.asStateFlow()
+
+    private val _isWaitingForAuth = MutableStateFlow(false)
+    val isWaitingForAuth: StateFlow<Boolean> = _isWaitingForAuth.asStateFlow()
+
+    fun setDiagnosticResult(res: com.example.model.TvDiagnosticResult) {
+        _diagnosticResult.value = res
+    }
+
+    fun clearDiagnostic() {
+        _diagnosticResult.value = null
+        _isWaitingForAuth.value = false
+    }
+
     // Standard core Google TV apps
     private val coreTvApps = listOf(
         TvApp("YouTube", "com.google.android.youtube.tv", "youtube", "Media", true),
@@ -71,39 +86,63 @@ class TvAdbClient {
     }
 
     suspend fun connect(device: TvDevice): Boolean = withContext(Dispatchers.IO) {
-        log("در حال اتصال وای‌فای به ${device.name} (${device.ipAddress}:${device.port})...")
+        log("بررسی وضعیت اتصال به ${device.name} (${device.ipAddress}:${device.port})...")
         _connectedDevice.value = device
+        _isWaitingForAuth.value = false
+
+        // Run smart diagnostic check on all ports
+        val diag = TvDiagnosticHelper.diagnoseDevice(device.ipAddress)
+        _diagnosticResult.value = diag
 
         val startTime = System.currentTimeMillis()
-        var socketConnected = false
 
-        try {
-            val socket = Socket()
-            socket.connect(InetSocketAddress(device.ipAddress, device.port), 2000)
-            val latency = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
-            socket.close()
-            socketConnected = true
+        if (diag.isAdbOpen) {
+            try {
+                val socket = Socket()
+                socket.connect(InetSocketAddress(device.ipAddress, 5555), 2500)
+                val latency = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
+                socket.close()
 
-            _connectedDevice.value = device.copy(
-                latencyMs = latency,
-                isConnected = true
-            )
-            _isConnected.value = true
-            log("ارتباط با موفقیت برقرار شد (${latency}ms).")
+                _connectedDevice.value = device.copy(
+                    latencyMs = latency,
+                    isConnected = true,
+                    isAdbOpen = true,
+                    isCastOpen = diag.isCastOpen,
+                    isRemoteV2Open = diag.isRemoteV2Open
+                )
+                _isConnected.value = true
+                log("ارتباط ADB با موفقیت برقرار شد (${latency}ms).")
 
-            // Query real TV directory and installed apps
-            loadDirectory("/sdcard")
-            fetchInstalledAppsFromTv()
+                // Query real TV directory and installed apps
+                loadDirectory("/sdcard")
+                fetchInstalledAppsFromTv()
 
-            _screenState.value = _screenState.value.copy(
-                lastAction = "متصل به ${device.name}",
-                lastActionTimestamp = System.currentTimeMillis()
-            )
-            return@withContext true
-        } catch (e: Exception) {
-            Log.w(TAG, "Connection failed: ${e.message}")
+                _screenState.value = _screenState.value.copy(
+                    lastAction = "متصل به ${device.name}",
+                    lastActionTimestamp = System.currentTimeMillis()
+                )
+                return@withContext true
+            } catch (e: Exception) {
+                Log.w(TAG, "Connection to ADB failed: ${e.message}")
+                _isConnected.value = false
+                log("خطا در اتصال سوکت ADB: ${e.message}")
+                return@withContext false
+            }
+        } else if (diag.isReachable) {
+            // TV is reachable (e.g. port 8008 / 6466 / ping), but ADB (5555) is closed!
             _isConnected.value = false
-            log("عدم موفقیت در اتصال به ${device.ipAddress}:${device.port} - از روشن بودن تلویزیون و فعال بودن Network Debugging اطمینان حاصل کنید.")
+            _connectedDevice.value = device.copy(
+                isOnline = true,
+                isAdbOpen = false,
+                isCastOpen = diag.isCastOpen,
+                isRemoteV2Open = diag.isRemoteV2Open
+            )
+            log("تلویزیون در شبکه متصل است، اما اشکال‌زدایی شبکه (پورت ۵۵۵۵) خاموش است.")
+            return@withContext false
+        } else {
+            // Device not responding at all
+            _isConnected.value = false
+            log("عدم دسترسی به ${device.ipAddress} - تلویزیون خاموش یا در شبکه دیگری است.")
             return@withContext false
         }
     }
@@ -557,7 +596,8 @@ class TvAdbClient {
                     socket.close()
                     return@withContext sb.toString().trim()
                 } else if (respCmd == AdbConstants.A_AUTH) {
-                    log("پیام تایید اتصال (Authorization) روی تلویزیون ظاهر شده است؛ لطفاً گزینه Always Allow را تایید نمایید.")
+                    _isWaitingForAuth.value = true
+                    log("پیام تایید اتصال (Authorization) روی تلویزیون ظاهر شده است؛ لطفاً گزینه Always Allow و OK را در تلویزیون تایید نمایید.")
                 }
             }
 

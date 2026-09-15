@@ -16,15 +16,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.Socket
-import java.net.URL
 import java.util.Collections
 
 class TvDiscoveryService(private val context: Context) {
@@ -49,6 +47,15 @@ class TvDiscoveryService(private val context: Context) {
     private var nsdListener: NsdManager.DiscoveryListener? = null
     private var multicastLock: WifiManager.MulticastLock? = null
 
+    // Known priority IPs (e.g. 192.168.1.101) to always probe immediately
+    private val priorityIps = mutableSetOf("192.168.1.101")
+
+    fun registerPriorityIp(ip: String) {
+        if (ip.isNotBlank()) {
+            priorityIps.add(ip.trim())
+        }
+    }
+
     fun startDiscovery() {
         if (_isScanning.value) return
         _isScanning.value = true
@@ -59,16 +66,26 @@ class TvDiscoveryService(private val context: Context) {
         scanJob?.cancel()
         scanJob = CoroutineScope(Dispatchers.IO).launch {
             try {
-                // 1. Start mDNS discovery via NsdManager for Google Cast / Android TV
+                // 1. Instant direct probe for known / priority IPs (192.168.1.101, etc.)
+                probePriorityDevices()
+                _scanProgress.value = 0.15f
+
+                // 2. Start mDNS discovery via NsdManager for Google Cast / Android TV
                 startNsd()
 
-                // 2. Detect actual local network interface IPv4 prefix
-                val (localIp, prefix) = getLocalIpAndSubnet()
-                _currentSubnet.value = localIp
-                Log.d(TAG, "Local IP detected: $localIp, Scanning subnet: $prefix.*")
+                // 3. Send SSDP M-SEARCH broadcast packet for Smart TVs & DIAL
+                sendSsdpDiscovery()
+                _scanProgress.value = 0.25f
 
-                // 3. Scan local Wi-Fi subnet for real TVs (Port 5555 for ADB, 8008 for Cast/DIAL, 6466 for Remote v2)
-                scanSubnet(prefix)
+                // 4. Detect Wi-Fi local network interface IPv4 subnets
+                val subnets = getLocalSubnets()
+                Log.d(TAG, "Subnets to scan: ${subnets.map { it.second }}")
+
+                for ((index, subnetPair) in subnets.withIndex()) {
+                    val (localIp, prefix) = subnetPair
+                    _currentSubnet.value = "$prefix.*"
+                    scanSubnet(prefix, baseProgress = 0.25f + index * 0.35f, maxProgress = 0.25f + (index + 1) * 0.35f)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in discovery process: ${e.message}")
             } finally {
@@ -84,6 +101,29 @@ class TvDiscoveryService(private val context: Context) {
         stopNsd()
         releaseMulticastLock()
         _isScanning.value = false
+    }
+
+    private suspend fun probePriorityDevices() = withContext(Dispatchers.IO) {
+        for (ip in priorityIps) {
+            val diag = TvDiagnosticHelper.diagnoseDevice(ip)
+            if (diag.isReachable) {
+                addOrUpdateDevice(
+                    TvDevice(
+                        id = "lan_$ip",
+                        name = diag.tvName,
+                        ipAddress = ip,
+                        port = 5555,
+                        model = diag.tvModel,
+                        isOnline = true,
+                        latencyMs = if (diag.latencyMs > 0) diag.latencyMs else 15L,
+                        isAdbOpen = diag.isAdbOpen,
+                        isCastOpen = diag.isCastOpen,
+                        isRemoteV2Open = diag.isRemoteV2Open,
+                        isSaved = true
+                    )
+                )
+            }
+        }
     }
 
     private fun acquireMulticastLock() {
@@ -157,6 +197,7 @@ class TvDiscoveryService(private val context: Context) {
                             model = "Google TV / Android TV",
                             isOnline = true,
                             latencyMs = 8L,
+                            isCastOpen = true,
                             isSimulated = false
                         )
                     )
@@ -176,9 +217,70 @@ class TvDiscoveryService(private val context: Context) {
         nsdListener = null
     }
 
-    private suspend fun scanSubnet(subnetPrefix: String) = withContext(Dispatchers.IO) {
+    /**
+     * Sends SSDP M-SEARCH broadcast over UDP to 239.255.255.250:1900.
+     * Google Cast, Smart TVs, DIAL servers immediately reply with their location and IP.
+     */
+    private suspend fun sendSsdpDiscovery() = withContext(Dispatchers.IO) {
+        try {
+            val socket = DatagramSocket()
+            socket.soTimeout = 1500
+            socket.broadcast = true
+
+            val mSearch = "M-SEARCH * HTTP/1.1\r\n" +
+                    "HOST: 239.255.255.250:1900\r\n" +
+                    "MAN: \"ssdp:discover\"\r\n" +
+                    "MX: 2\r\n" +
+                    "ST: urn:dial-multiscreen-org:service:dial:1\r\n" +
+                    "\r\n"
+
+            val sendData = mSearch.toByteArray()
+            val packet = DatagramPacket(
+                sendData,
+                sendData.size,
+                InetAddress.getByName("239.255.255.250"),
+                1900
+            )
+            socket.send(packet)
+
+            val recvBuf = ByteArray(2048)
+            val recvPacket = DatagramPacket(recvBuf, recvBuf.size)
+            val startTime = System.currentTimeMillis()
+
+            while (System.currentTimeMillis() - startTime < 1500) {
+                try {
+                    socket.receive(recvPacket)
+                    val ip = recvPacket.address.hostAddress ?: continue
+                    val response = String(recvPacket.data, 0, recvPacket.length)
+                    if (response.contains("200 OK", ignoreCase = true)) {
+                        val diag = TvDiagnosticHelper.diagnoseDevice(ip)
+                        addOrUpdateDevice(
+                            TvDevice(
+                                id = "ssdp_$ip",
+                                name = diag.tvName,
+                                ipAddress = ip,
+                                port = 5555,
+                                model = diag.tvModel,
+                                isOnline = true,
+                                latencyMs = 10L,
+                                isAdbOpen = diag.isAdbOpen,
+                                isCastOpen = diag.isCastOpen
+                            )
+                        )
+                    }
+                } catch (e: Exception) {
+                    break
+                }
+            }
+            socket.close()
+        } catch (e: Exception) {
+            Log.d(TAG, "SSDP discovery completed or skipped: ${e.message}")
+        }
+    }
+
+    private suspend fun scanSubnet(subnetPrefix: String, baseProgress: Float, maxProgress: Float) = withContext(Dispatchers.IO) {
         val candidateIps = (1..254).map { "$subnetPrefix.$it" }
-        val batchSize = 32
+        val batchSize = 16 // gentler batch size to avoid Wi-Fi router packet congestion
 
         for (i in candidateIps.indices step batchSize) {
             val batch = candidateIps.subList(i, minOf(i + batchSize, candidateIps.size))
@@ -191,62 +293,41 @@ class TvDiscoveryService(private val context: Context) {
             results.filterNotNull().forEach { found ->
                 addOrUpdateDevice(found)
             }
-            _scanProgress.value = (i.toFloat() / candidateIps.size).coerceIn(0.1f, 0.95f)
+            val fraction = i.toFloat() / candidateIps.size
+            _scanProgress.value = (baseProgress + fraction * (maxProgress - baseProgress)).coerceIn(0.1f, 0.98f)
         }
     }
 
     private fun checkDeviceAtIp(ip: String): TvDevice? {
-        // 1. Check Port 5555 (ADB Wireless Debugging)
-        val adbLatency = testPort(ip, 5555, timeoutMs = 180)
-        if (adbLatency >= 0) {
-            val realName = queryCastInfo(ip)?.first ?: "Google TV ($ip)"
-            val realModel = queryCastInfo(ip)?.second ?: "Google TV (ADB: 5555)"
-            return TvDevice(
-                id = "lan_$ip",
-                name = realName,
-                ipAddress = ip,
-                port = 5555,
-                model = realModel,
-                isOnline = true,
-                latencyMs = adbLatency,
-                isSimulated = false
-            )
+        // 1. Check Port 5555 (ADB Wireless Debugging) - timeout 350ms
+        val adbLatency = testPort(ip, 5555, timeoutMs = 350)
+
+        // 2. Check Port 8008 (Google Cast / DIAL REST API) - timeout 350ms
+        val castLatency = testPort(ip, 8008, timeoutMs = 350)
+
+        // 3. Check Port 6466 (Google TV Remote v2 Service) - timeout 350ms
+        val remoteLatency = testPort(ip, 6466, timeoutMs = 350)
+
+        if (adbLatency < 0 && castLatency < 0 && remoteLatency < 0) {
+            return null
         }
 
-        // 2. Check Port 8008 (Google Cast / DIAL REST API)
-        val castLatency = testPort(ip, 8008, timeoutMs = 150)
-        if (castLatency >= 0) {
-            val castInfo = queryCastInfo(ip)
-            val devName = castInfo?.first ?: "Google TV ($ip)"
-            val devModel = castInfo?.second ?: "Chromecast / Google TV"
-            return TvDevice(
-                id = "lan_$ip",
-                name = devName,
-                ipAddress = ip,
-                port = 5555,
-                model = devModel,
-                isOnline = true,
-                latencyMs = castLatency,
-                isSimulated = false
-            )
-        }
+        val bestLatency = listOf(adbLatency, castLatency, remoteLatency).filter { it >= 0 }.minOrNull() ?: 15L
+        val diag = TvDiagnosticHelper.queryCastInfoOrFallback(ip, adbLatency >= 0, castLatency >= 0, remoteLatency >= 0)
 
-        // 3. Check Port 6466 (Google TV Remote v2 Service)
-        val remoteLatency = testPort(ip, 6466, timeoutMs = 150)
-        if (remoteLatency >= 0) {
-            return TvDevice(
-                id = "lan_$ip",
-                name = "Google TV ($ip)",
-                ipAddress = ip,
-                port = 5555,
-                model = "Google TV Remote v2",
-                isOnline = true,
-                latencyMs = remoteLatency,
-                isSimulated = false
-            )
-        }
-
-        return null
+        return TvDevice(
+            id = "lan_$ip",
+            name = diag.first,
+            ipAddress = ip,
+            port = 5555,
+            model = diag.second,
+            isOnline = true,
+            latencyMs = bestLatency,
+            isAdbOpen = adbLatency >= 0,
+            isCastOpen = castLatency >= 0,
+            isRemoteV2Open = remoteLatency >= 0,
+            isSimulated = false
+        )
     }
 
     private fun testPort(ip: String, port: Int, timeoutMs: Int): Long {
@@ -262,42 +343,53 @@ class TvDiscoveryService(private val context: Context) {
         }
     }
 
-    private fun queryCastInfo(ip: String): Pair<String, String>? {
-        return try {
-            val url = URL("http://$ip:8008/setup/eureka_info")
-            val conn = url.openConnection() as HttpURLConnection
-            conn.connectTimeout = 800
-            conn.readTimeout = 800
-            conn.requestMethod = "GET"
-            if (conn.responseCode == 200) {
-                val reader = BufferedReader(InputStreamReader(conn.inputStream))
-                val response = reader.readText()
-                reader.close()
-                conn.disconnect()
-
-                val json = JSONObject(response)
-                val name = json.optString("name", "Google TV")
-                val model = json.optString("model_name", "Google TV / Chromecast")
-                Pair(name, model)
-            } else {
-                conn.disconnect()
-                null
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     /**
-     * Determines real local IPv4 address and /24 subnet prefix using NetworkInterface.
-     * Works on all Android versions without requiring location permission.
+     * Determines real local IPv4 subnets, prioritizing Wi-Fi over Cellular (4G/5G).
+     * Always ensures 192.168.1 is included.
      */
-    private fun getLocalIpAndSubnet(): Pair<String, String> {
+    private fun getLocalSubnets(): List<Pair<String, String>> {
+        val subnets = mutableListOf<Pair<String, String>>()
         try {
+            // Check WifiManager first
+            val wifiIpInt = wifiManager?.connectionInfo?.ipAddress ?: 0
+            if (wifiIpInt != 0) {
+                val wifiIp = String.format(
+                    java.util.Locale.US,
+                    "%d.%d.%d.%d",
+                    wifiIpInt and 0xff,
+                    (wifiIpInt shr 8) and 0xff,
+                    (wifiIpInt shr 16) and 0xff,
+                    (wifiIpInt shr 24) and 0xff
+                )
+                val parts = wifiIp.split(".")
+                if (parts.size == 4 && parts[0] != "0") {
+                    subnets.add(Pair(wifiIp, "${parts[0]}.${parts[1]}.${parts[2]}"))
+                }
+            }
+
+            // Scan NetworkInterfaces prioritizing wlan / eth
             val interfaces = NetworkInterface.getNetworkInterfaces()
             if (interfaces != null) {
-                for (intf in Collections.list(interfaces)) {
+                val list = Collections.list(interfaces).sortedByDescending { intf ->
+                    val name = intf.name.lowercase()
+                    when {
+                        name.startsWith("wlan") -> 100
+                        name.startsWith("eth") -> 90
+                        name.startsWith("wifi") -> 80
+                        name.startsWith("tiwlan") -> 70
+                        name.startsWith("rmnet") -> -10
+                        name.startsWith("ccmni") -> -10
+                        name.startsWith("dummy") -> -20
+                        name.startsWith("p2p") -> -20
+                        else -> 0
+                    }
+                }
+
+                for (intf in list) {
                     if (!intf.isUp || intf.isLoopback) continue
+                    val intfName = intf.name.lowercase()
+                    if (intfName.startsWith("rmnet") || intfName.startsWith("ccmni") || intfName.startsWith("dummy")) continue
+
                     for (addr in Collections.list(intf.inetAddresses)) {
                         if (!addr.isLoopbackAddress && addr is Inet4Address) {
                             val host = addr.hostAddress ?: continue
@@ -305,7 +397,9 @@ class TvDiscoveryService(private val context: Context) {
                             val parts = host.split(".")
                             if (parts.size == 4) {
                                 val prefix = "${parts[0]}.${parts[1]}.${parts[2]}"
-                                return Pair(host, prefix)
+                                if (!subnets.any { it.second == prefix }) {
+                                    subnets.add(Pair(host, prefix))
+                                }
                             }
                         }
                     }
@@ -314,10 +408,16 @@ class TvDiscoveryService(private val context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "Error enumerating network interfaces: ${e.message}")
         }
-        return Pair("192.168.1.1", "192.168.1")
+
+        // Guarantee 192.168.1 is always scanned
+        if (!subnets.any { it.second == "192.168.1" }) {
+            subnets.add(Pair("192.168.1.1", "192.168.1"))
+        }
+
+        return subnets
     }
 
-    private fun addOrUpdateDevice(newDevice: TvDevice) {
+    fun addOrUpdateDevice(newDevice: TvDevice) {
         val current = _discoveredDevices.value.toMutableList()
         val index = current.indexOfFirst { it.ipAddress == newDevice.ipAddress }
         if (index >= 0) {
@@ -339,6 +439,7 @@ class TvDiscoveryService(private val context: Context) {
             isOnline = true,
             latencyMs = 12L,
             isFavorite = true,
+            isSaved = true,
             isSimulated = false
         )
         addOrUpdateDevice(device)

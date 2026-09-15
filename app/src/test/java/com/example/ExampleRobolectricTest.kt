@@ -39,4 +39,32 @@ class ExampleRobolectricTest {
     assertEquals("192.168.1.55", prefs2.lastConnectedIp)
     assertEquals("Sony Android TV", prefs2.lastConnectedName)
   }
+
+  @Test
+  fun `test diagnostic model statuses`() {
+    val diagReady = com.example.model.TvDiagnosticResult(
+      ip = "192.168.1.101",
+      isReachable = true,
+      latencyMs = 12,
+      isAdbOpen = true,
+      isCastOpen = true,
+      isRemoteV2Open = true,
+      status = com.example.model.DiagnosticStatus.READY_TO_CONNECT
+    )
+    assertTrue(diagReady.isAdbOpen)
+    assertEquals(com.example.model.DiagnosticStatus.READY_TO_CONNECT, diagReady.status)
+
+    val diagDisabled = com.example.model.TvDiagnosticResult(
+      ip = "192.168.1.101",
+      isReachable = true,
+      latencyMs = 10,
+      isAdbOpen = false,
+      isCastOpen = true,
+      isRemoteV2Open = false,
+      status = com.example.model.DiagnosticStatus.ADB_DEBUGGING_DISABLED
+    )
+    assertFalse(diagDisabled.isAdbOpen)
+    assertTrue(diagDisabled.isCastOpen)
+    assertEquals(com.example.model.DiagnosticStatus.ADB_DEBUGGING_DISABLED, diagDisabled.status)
+  }
 }

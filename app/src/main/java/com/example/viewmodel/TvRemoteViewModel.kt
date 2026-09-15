@@ -18,6 +18,7 @@ import com.example.model.TvScreenState
 import com.example.network.TvAdbClient
 import com.example.network.TvDiscoveryService
 import com.example.util.AppLanguage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -115,6 +116,15 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
 
+    val diagnosticResult: StateFlow<com.example.model.TvDiagnosticResult?> = adbClient.diagnosticResult
+    val isWaitingForAuth: StateFlow<Boolean> = adbClient.isWaitingForAuth
+
+    private val _showDiagnosticDialog = MutableStateFlow(false)
+    val showDiagnosticDialog: StateFlow<Boolean> = _showDiagnosticDialog.asStateFlow()
+
+    private val _isDiagnosticLoading = MutableStateFlow(false)
+    val isDiagnosticLoading: StateFlow<Boolean> = _isDiagnosticLoading.asStateFlow()
+
     val savedDevices: StateFlow<List<SavedTvDevice>> = dao.getAllDevices().stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
@@ -122,11 +132,31 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
     )
 
     init {
+        // Register known priority IP for immediate discovery probing
+        discoveryService.registerPriorityIp("192.168.1.101")
+        val lastIp = prefs.lastConnectedIp
+        if (!lastIp.isNullOrBlank()) {
+            discoveryService.registerPriorityIp(lastIp)
+        }
+
+        // Pre-populate database with Google TV (192.168.1.101) so it is always present
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.insertDevice(
+                SavedTvDevice(
+                    ipAddress = "192.168.1.101",
+                    name = "Google TV (192.168.1.101)",
+                    port = 5555,
+                    model = "Google TV / Android TV",
+                    isFavorite = true,
+                    lastConnected = System.currentTimeMillis()
+                )
+            )
+        }
+
         // Start Wi-Fi discovery for real devices on local network
         discoveryService.startDiscovery()
 
         // If user previously connected to a real TV, attempt reconnect
-        val lastIp = prefs.lastConnectedIp
         if (!lastIp.isNullOrBlank()) {
             val savedDev = TvDevice(
                 id = "saved_$lastIp",
@@ -206,23 +236,43 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
         _toastMessage.value = null
     }
 
+    fun runDiagnostic(ip: String) {
+        vibrateClick()
+        _showDiagnosticDialog.value = true
+        _isDiagnosticLoading.value = true
+        viewModelScope.launch {
+            val res = com.example.network.TvDiagnosticHelper.diagnoseDevice(ip)
+            _isDiagnosticLoading.value = false
+            adbClient.setDiagnosticResult(res)
+        }
+    }
+
+    fun dismissDiagnosticDialog() {
+        _showDiagnosticDialog.value = false
+        _isDiagnosticLoading.value = false
+        adbClient.clearDiagnostic()
+    }
+
     // ==================== ACTIONS ====================
 
     fun connectToDevice(device: TvDevice) {
         vibrateClick()
         viewModelScope.launch {
+            // Always persist device to Room database so it is never lost from the list
+            dao.insertDevice(
+                SavedTvDevice(
+                    ipAddress = device.ipAddress,
+                    name = device.name,
+                    port = device.port,
+                    model = device.model,
+                    isFavorite = device.isFavorite
+                )
+            )
+            discoveryService.registerPriorityIp(device.ipAddress)
+
             val success = adbClient.connect(device)
             val isFa = _appLanguage.value == AppLanguage.FA
             if (success) {
-                dao.insertDevice(
-                    SavedTvDevice(
-                        ipAddress = device.ipAddress,
-                        name = device.name,
-                        port = device.port,
-                        model = device.model,
-                        isFavorite = device.isFavorite
-                    )
-                )
                 prefs.lastConnectedIp = device.ipAddress
                 prefs.lastConnectedName = device.name
                 prefs.lastConnectedPort = device.port
@@ -230,8 +280,13 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
 
                 _toastMessage.value = if (isFa) "متصل شد به ${device.name}" else "Connected to ${device.name}"
                 _showDeviceSheet.value = false
+                _showDiagnosticDialog.value = false
             } else {
-                _toastMessage.value = if (isFa) "خطا در اتصال به ${device.ipAddress}" else "Failed to connect to ${device.ipAddress}"
+                val diag = adbClient.diagnosticResult.value
+                if (diag?.status == com.example.model.DiagnosticStatus.ADB_DEBUGGING_DISABLED || diag?.isReachable == true) {
+                    _showDiagnosticDialog.value = true
+                }
+                _toastMessage.value = if (isFa) "خطا در اتصال به ${device.ipAddress} - بخش عیب‌یابی را بررسی کنید" else "Failed to connect to ${device.ipAddress}"
             }
         }
     }

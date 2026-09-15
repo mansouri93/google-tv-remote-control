@@ -19,11 +19,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.TvOff
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -31,6 +34,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -56,6 +60,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.TvDevice
+import com.example.ui.theme.AmberAccent
 import com.example.ui.theme.CyanAccent
 import com.example.ui.theme.EmeraldAccent
 import com.example.ui.theme.IndigoAccent
@@ -78,7 +83,8 @@ fun DevicePickerSheet(
     onSelectDevice: (TvDevice) -> Unit,
     onAddManualDevice: (String, String, Int) -> Unit,
     onDismiss: () -> Unit,
-    onShowHelp: () -> Unit
+    onShowHelp: () -> Unit,
+    onDiagnose: (String) -> Unit = {}
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val strings = LocalAppStrings.current
@@ -279,7 +285,7 @@ fun DevicePickerSheet(
                                 Row(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .padding(end = 8.dp),
+                                        .padding(end = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Box(
@@ -312,28 +318,62 @@ fun DevicePickerSheet(
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
+                                        // Status badge
+                                        if (dev.isAdbOpen) {
+                                            Text(
+                                                text = "✓ پورت ADB فعال و آماده",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = EmeraldAccent,
+                                                fontSize = 10.sp
+                                            )
+                                        } else if (dev.isCastOpen) {
+                                            Text(
+                                                text = "⚠ کست آنلاین (اشکال‌زدایی ADB خاموش)",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = AmberAccent,
+                                                fontSize = 10.sp
+                                            )
+                                        }
                                     }
                                 }
 
-                                if (isCurrent) {
-                                    Icon(
-                                        imageVector = Icons.Default.CheckCircle,
-                                        contentDescription = strings.connectedTo,
-                                        tint = EmeraldAccent,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                } else {
-                                    Button(
-                                        onClick = { onSelectDevice(dev) },
-                                        shape = RoundedCornerShape(10.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = Slate950)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    // Diagnostic Button
+                                    IconButton(
+                                        onClick = { onDiagnose(dev.ipAddress) },
+                                        modifier = Modifier.size(36.dp)
                                     ) {
-                                        Text(
-                                            text = strings.directConnect,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1
+                                        Icon(
+                                            imageVector = Icons.Default.Build,
+                                            contentDescription = "عیب‌یابی",
+                                            tint = Slate400,
+                                            modifier = Modifier.size(18.dp)
                                         )
+                                    }
+
+                                    if (isCurrent) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = strings.connectedTo,
+                                            tint = EmeraldAccent,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    } else {
+                                        Button(
+                                            onClick = { onSelectDevice(dev) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = Slate950)
+                                        ) {
+                                            Text(
+                                                text = strings.directConnect,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1
+                                            )
+                                        }
                                     }
                                 }
                             }
