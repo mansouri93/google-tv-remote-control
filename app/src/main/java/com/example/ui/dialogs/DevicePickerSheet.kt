@@ -1,7 +1,6 @@
 package com.example.ui.dialogs
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,7 +23,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Tv
-import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.TvOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.TvDevice
@@ -105,47 +106,58 @@ fun DevicePickerSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Sheet Header
+            // Sheet Header with flexible layout
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp)
+                ) {
                     Text(
                         text = strings.detectedDevices,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = Color.White
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = strings.deviceSheetSubtitle,
                         style = MaterialTheme.typography.labelSmall,
-                        color = EmeraldAccent
+                        color = EmeraldAccent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                Row {
-                    Button(
-                        onClick = onScan,
-                        enabled = !isScanning,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Slate800,
-                            contentColor = CyanAccent
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.testTag("dialog_btn_scan")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = strings.scanAgain,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(if (isScanning) strings.scanningWifi else strings.scanAgain, fontSize = 12.sp)
-                    }
+                Button(
+                    onClick = onScan,
+                    enabled = !isScanning,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Slate800,
+                        contentColor = CyanAccent
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.testTag("dialog_btn_scan")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = strings.scanAgain,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
+                    )
                 }
             }
 
@@ -177,7 +189,7 @@ fun DevicePickerSheet(
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, tint = CyanAccent, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.manualIpButton, fontSize = 12.sp)
+                    Text(strings.manualIpButton, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
 
                 OutlinedButton(
@@ -191,84 +203,138 @@ fun DevicePickerSheet(
                 ) {
                     Icon(Icons.Default.HelpOutline, contentDescription = null, tint = Slate400, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.setupGuideButton, fontSize = 12.sp)
+                    Text(strings.setupGuideButton, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
 
-            // Devices list
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(300.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(devices, key = { it.ipAddress }) { dev ->
-                    val isCurrent = dev.ipAddress == currentDevice?.ipAddress
-                    Card(
+            // Devices list or Empty State
+            if (devices.isEmpty()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = Slate850)
+                ) {
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable { onSelectDevice(dev) }
-                            .testTag("device_item_${dev.ipAddress}"),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isCurrent) Slate800 else Slate850
-                        ),
-                        border = if (isCurrent)
-                            CardDefaults.outlinedCardBorder().copy(brush = Brush.linearGradient(listOf(CyanAccent, IndigoAccent)))
-                        else null
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Row(
+                        Icon(
+                            imageVector = Icons.Default.TvOff,
+                            contentDescription = null,
+                            tint = Slate400,
+                            modifier = Modifier.size(36.dp)
+                        )
+                        Text(
+                            text = if (isScanning) strings.scanningWifi else strings.noDevicesFound,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Slate400,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        )
+                        if (!isScanning) {
+                            Button(
+                                onClick = { showManualDialog = true },
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = Slate950)
+                            ) {
+                                Text(strings.manualIpButton, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 120.dp, max = 340.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(devices, key = { it.ipAddress }) { dev ->
+                        val isCurrent = dev.ipAddress == currentDevice?.ipAddress
+                        Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable { onSelectDevice(dev) }
+                                .testTag("device_item_${dev.ipAddress}"),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isCurrent) Slate800 else Slate850
+                            ),
+                            border = if (isCurrent)
+                                CardDefaults.outlinedCardBorder().copy(brush = Brush.linearGradient(listOf(CyanAccent, IndigoAccent)))
+                            else null
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
                                     modifier = Modifier
-                                        .size(44.dp)
-                                        .clip(CircleShape)
-                                        .background(if (isCurrent) CyanAccent.copy(alpha = 0.2f) else Slate800),
-                                    contentAlignment = Alignment.Center
+                                        .weight(1f)
+                                        .padding(end = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(42.dp)
+                                            .clip(CircleShape)
+                                            .background(if (isCurrent) CyanAccent.copy(alpha = 0.2f) else Slate800),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Tv,
+                                            contentDescription = null,
+                                            tint = if (isCurrent) CyanAccent else Slate400,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = dev.name,
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = Color.White,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "${dev.model} • ${dev.ipAddress}:${dev.port}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Slate400,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                if (isCurrent) {
                                     Icon(
-                                        imageVector = Icons.Default.Tv,
-                                        contentDescription = null,
-                                        tint = if (isCurrent) CyanAccent else Slate400,
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = strings.connectedTo,
+                                        tint = EmeraldAccent,
                                         modifier = Modifier.size(24.dp)
                                     )
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(
-                                        text = dev.name,
-                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                        color = Color.White
-                                    )
-                                    Text(
-                                        text = "${dev.model} • ${dev.ipAddress}:${dev.port}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Slate400
-                                    )
-                                }
-                            }
-
-                            if (isCurrent) {
-                                Icon(
-                                    imageVector = Icons.Default.CheckCircle,
-                                    contentDescription = strings.connectedTo,
-                                    tint = EmeraldAccent,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            } else {
-                                Button(
-                                    onClick = { onSelectDevice(dev) },
-                                    shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = Slate950)
-                                ) {
-                                    Text(strings.directConnect, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                } else {
+                                    Button(
+                                        onClick = { onSelectDevice(dev) },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = Slate950)
+                                    ) {
+                                        Text(
+                                            text = strings.directConnect,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -286,7 +352,10 @@ fun DevicePickerSheet(
             onDismissRequest = { showManualDialog = false },
             title = { Text(strings.manualDialogTitle, color = Color.White) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     OutlinedTextField(
                         value = manualName,
                         onValueChange = { manualName = it },
@@ -297,7 +366,8 @@ fun DevicePickerSheet(
                             focusedBorderColor = CyanAccent,
                             unfocusedBorderColor = Slate700
                         ),
-                        singleLine = true
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = manualIp,
@@ -309,7 +379,8 @@ fun DevicePickerSheet(
                             focusedBorderColor = CyanAccent,
                             unfocusedBorderColor = Slate700
                         ),
-                        singleLine = true
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = manualPort,
@@ -321,7 +392,8 @@ fun DevicePickerSheet(
                             focusedBorderColor = CyanAccent,
                             unfocusedBorderColor = Slate700
                         ),
-                        singleLine = true
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             },

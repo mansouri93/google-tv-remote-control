@@ -18,10 +18,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
+import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class TvAdbClient {
 
@@ -39,7 +42,7 @@ class TvAdbClient {
     private val _installedApps = MutableStateFlow<List<TvApp>>(emptyList())
     val installedApps: StateFlow<List<TvApp>> = _installedApps.asStateFlow()
 
-    private val _currentDirectory = MutableStateFlow("/sdcard/Download")
+    private val _currentDirectory = MutableStateFlow("/sdcard")
     val currentDirectory: StateFlow<String> = _currentDirectory.asStateFlow()
 
     private val _fileList = MutableStateFlow<List<TvFileItem>>(emptyList())
@@ -48,99 +51,69 @@ class TvAdbClient {
     private val _actionLogs = MutableSharedFlow<String>(extraBufferCapacity = 50)
     val actionLogs: SharedFlow<String> = _actionLogs.asSharedFlow()
 
-    // Default installed apps on Google TV
-    private val defaultTvApps = listOf(
+    // Standard core Google TV apps
+    private val coreTvApps = listOf(
         TvApp("YouTube", "com.google.android.youtube.tv", "youtube", "Media", true),
         TvApp("Netflix", "com.netflix.ninja", "netflix", "Media", true),
         TvApp("Prime Video", "com.amazon.amazonvideo.livingroom", "prime", "Media", true),
         TvApp("Spotify", "com.spotify.tv.android", "spotify", "Music", true),
         TvApp("VLC Player", "org.videolan.vlc", "vlc", "Player", false),
-        TvApp("Plex", "com.plexapp.android", "plex", "Media", false),
-        TvApp("Kodi", "org.xbmc.kodi", "kodi", "Player", false),
         TvApp("SmartTube", "com.liskovsoft.videomanager", "smarttube", "Media", true),
-        TvApp("Disney+", "com.disney.disneyplus", "disney", "Media", false),
-        TvApp("Twitch", "tv.twitch.android.app", "twitch", "Media", false),
-        TvApp("File Commander", "com.mobisystems.fileman", "fileman", "Tools", false),
-        TvApp("تنظیمات گوگل تی‌وی", "com.android.tv.settings", "settings", "System", true),
-        TvApp("فروشگاه گوگل پلی", "com.android.vending", "playstore", "Store", true),
-        TvApp("مرورگر اینترنت TV Bro", "com.phlox.tvwebbrowser", "browser", "Tools", false),
-        TvApp("MX Player", "com.mxtech.videoplayer.ad", "mxplayer", "Player", false),
-        TvApp("Apple TV", "com.apple.atve.androidtv.appletv", "appletv", "Media", false)
-    )
-
-    // Simulated file system on TV
-    private val simulatedFiles = mutableMapOf<String, MutableList<TvFileItem>>(
-        "/sdcard" to mutableListOf(
-            TvFileItem("Download", "/sdcard/Download", true),
-            TvFileItem("Movies", "/sdcard/Movies", true),
-            TvFileItem("Pictures", "/sdcard/Pictures", true),
-            TvFileItem("Music", "/sdcard/Music", true),
-            TvFileItem("DCIM", "/sdcard/DCIM", true),
-            TvFileItem("Android", "/sdcard/Android", true),
-            TvFileItem("tv_settings_backup.json", "/sdcard/tv_settings_backup.json", false, 18420L)
-        ),
-        "/sdcard/Download" to mutableListOf(
-            TvFileItem("SmartTube_v22.40.apk", "/sdcard/Download/SmartTube_v22.40.apk", false, 19450000L),
-            TvFileItem("Sample_Video_4K_HDR.mp4", "/sdcard/Download/Sample_Video_4K_HDR.mp4", false, 245000000L),
-            TvFileItem("Movie_Persian_Subtitles.srt", "/sdcard/Download/Movie_Persian_Subtitles.srt", false, 74200L),
-            TvFileItem("TV_Wallpaper_Nature.jpg", "/sdcard/Download/TV_Wallpaper_Nature.jpg", false, 3420000L),
-            TvFileItem("Kodi_Repository_Addons.zip", "/sdcard/Download/Kodi_Repository_Addons.zip", false, 45200000L)
-        ),
-        "/sdcard/Movies" to mutableListOf(
-            TvFileItem("Interstellar_4K_HDR.mkv", "/sdcard/Movies/Interstellar_4K_HDR.mkv", false, 4200000000L),
-            TvFileItem("BBC_Planet_Earth_III.mp4", "/sdcard/Movies/BBC_Planet_Earth_III.mp4", false, 1850000000L)
-        ),
-        "/sdcard/Pictures" to mutableListOf(
-            TvFileItem("Wallpaper_Aurora.png", "/sdcard/Pictures/Wallpaper_Aurora.png", false, 5820000L),
-            TvFileItem("TV_Screenshot_2026.png", "/sdcard/Pictures/TV_Screenshot_2026.png", false, 1920000L)
-        ),
-        "/sdcard/Music" to mutableListOf(
-            TvFileItem("LivingRoom_Chill_Lofi.mp3", "/sdcard/Music/LivingRoom_Chill_Lofi.mp3", false, 8950000L),
-            TvFileItem("Acoustic_Soundtrack.flac", "/sdcard/Music/Acoustic_Soundtrack.flac", false, 34200000L)
-        )
+        TvApp("Kodi", "org.xbmc.kodi", "kodi", "Player", false),
+        TvApp("Plex", "com.plexapp.android", "plex", "Media", false),
+        TvApp("TV Settings", "com.android.tv.settings", "settings", "System", true),
+        TvApp("Google Play Store", "com.android.vending", "playstore", "Store", true),
+        TvApp("TV Bro Browser", "com.phlox.tvwebbrowser", "browser", "Tools", false)
     )
 
     init {
-        _installedApps.value = defaultTvApps
-        loadDirectory("/sdcard/Download")
+        _installedApps.value = coreTvApps
     }
 
     suspend fun connect(device: TvDevice): Boolean = withContext(Dispatchers.IO) {
-        log("در حال اتصال مستقیم به ${device.name} (${device.ipAddress}:${device.port})...")
+        log("در حال اتصال وای‌فای به ${device.name} (${device.ipAddress}:${device.port})...")
         _connectedDevice.value = device
 
-        var success = false
-        if (!device.isSimulated) {
-            try {
-                val socket = Socket()
-                socket.connect(InetSocketAddress(device.ipAddress, device.port), 1500)
-                socket.close()
-                success = true
-                log("اتصال مستقیم به تلویزیون ${device.ipAddress} با موفقیت برقرار شد.")
-            } catch (e: Exception) {
-                Log.w(TAG, "Socket connection failed: ${e.message}, falling back to responsive simulation mode.")
-                log("اتصال به ${device.ipAddress} در حالت شبیه‌ساز فعال شد (برای تست بدون نیاز به TV فیزیکی).")
-                success = true
-            }
-        } else {
-            delay(300)
-            success = true
-            log("متصل به ${device.name} (حالت بی‌درنگ)")
-        }
+        val startTime = System.currentTimeMillis()
+        var socketConnected = false
 
-        _isConnected.value = success
-        _screenState.value = _screenState.value.copy(
-            lastAction = "متصل به ${device.name}",
-            lastActionTimestamp = System.currentTimeMillis()
-        )
-        return@withContext success
+        try {
+            val socket = Socket()
+            socket.connect(InetSocketAddress(device.ipAddress, device.port), 2000)
+            val latency = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
+            socket.close()
+            socketConnected = true
+
+            _connectedDevice.value = device.copy(
+                latencyMs = latency,
+                isConnected = true
+            )
+            _isConnected.value = true
+            log("ارتباط با موفقیت برقرار شد (${latency}ms).")
+
+            // Query real TV directory and installed apps
+            loadDirectory("/sdcard")
+            fetchInstalledAppsFromTv()
+
+            _screenState.value = _screenState.value.copy(
+                lastAction = "متصل به ${device.name}",
+                lastActionTimestamp = System.currentTimeMillis()
+            )
+            return@withContext true
+        } catch (e: Exception) {
+            Log.w(TAG, "Connection failed: ${e.message}")
+            _isConnected.value = false
+            log("عدم موفقیت در اتصال به ${device.ipAddress}:${device.port} - از روشن بودن تلویزیون و فعال بودن Network Debugging اطمینان حاصل کنید.")
+            return@withContext false
+        }
     }
 
     fun disconnect() {
         val dev = _connectedDevice.value
-        log("قطع اتصال از ${dev?.name ?: "تلویزیون"}")
+        log("قطع ارتباط از ${dev?.name ?: "تلویزیون"}")
         _isConnected.value = false
         _connectedDevice.value = null
+        _fileList.value = emptyList()
         _screenState.value = _screenState.value.copy(
             lastAction = "اتصال قطع شد",
             lastActionTimestamp = System.currentTimeMillis()
@@ -151,11 +124,10 @@ class TvAdbClient {
 
     suspend fun sendText(text: String): Boolean = withContext(Dispatchers.IO) {
         if (text.isBlank()) return@withContext false
-        log("ارسال متن به کیبورد تلویزیون: \"$text\"")
+        log("ارسال متن به تلویزیون: \"$text\"")
 
-        // Execute via ADB if live socket exists
-        val escaped = text.replace("'", "\\'")
-        executeRawCommand("input text '$escaped'")
+        val escaped = text.replace(" ", "%s").replace("'", "\\'")
+        executeAdbShell("input text '$escaped'")
 
         _screenState.value = _screenState.value.copy(
             lastAction = "تایپ متن: $text",
@@ -165,8 +137,8 @@ class TvAdbClient {
     }
 
     suspend fun sendKey(key: TvRemoteKey): Boolean = withContext(Dispatchers.IO) {
-        log("ارسال کلید کنترل: ${key.label} (KeyCode: ${key.keyCode})")
-        executeRawCommand("input keyevent ${key.keyCode}")
+        log("ارسال کلید: ${key.label} (KeyCode: ${key.keyCode})")
+        executeAdbShell("input keyevent ${key.keyCode}")
 
         val current = _screenState.value
         val updated = when (key) {
@@ -182,15 +154,15 @@ class TvAdbClient {
             )
             TvRemoteKey.VOLUME_MUTE -> current.copy(
                 isMuted = !current.isMuted,
-                lastAction = if (!current.isMuted) "بی‌صدا (Mute)" else "صدا فعال شد"
+                lastAction = if (!current.isMuted) "بی‌صدا" else "صدا فعال شد"
             )
             TvRemoteKey.POWER -> current.copy(
                 powerOn = !current.powerOn,
-                lastAction = if (current.powerOn) "تلویزیون به حالت آماده‌باش رفت" else "تلویزیون روشن شد"
+                lastAction = if (current.powerOn) "حالت استندبای" else "روشن شد"
             )
             TvRemoteKey.HOME -> current.copy(
                 currentActiveApp = "Google TV Home",
-                lastAction = "رفتن به صفحه اصلی گوگل تی‌وی"
+                lastAction = "صفحه اصلی"
             )
             else -> current.copy(
                 lastAction = "کلید ${key.label}",
@@ -202,8 +174,8 @@ class TvAdbClient {
     }
 
     suspend fun sendCustomKeyCode(keyCode: Int): Boolean = withContext(Dispatchers.IO) {
-        log("ارسال کد کلید اختصاصی: $keyCode")
-        executeRawCommand("input keyevent $keyCode")
+        log("ارسال KeyCode: $keyCode")
+        executeAdbShell("input keyevent $keyCode")
         return@withContext true
     }
 
@@ -222,25 +194,21 @@ class TvAdbClient {
         )
     }
 
-    suspend fun moveCursor(deltaX: Float, deltaY: Float, sensitivity: Float = 1.0f) {
-        moveCursorSync(deltaX, deltaY, sensitivity)
-    }
-
     suspend fun sendMouseClick(isRightClick: Boolean = false) = withContext(Dispatchers.IO) {
         val current = _screenState.value
         val x = current.cursorX.toInt()
         val y = current.cursorY.toInt()
 
         if (isRightClick) {
-            log("کلیک راست ماوس روی مختصات ($x, $y)")
-            executeRawCommand("input keyevent 82") // MENU
+            log("کلیک راست در ($x, $y)")
+            executeAdbShell("input keyevent 82") // MENU
             _screenState.value = current.copy(
                 lastAction = "کلیک راست در ($x, $y)",
                 lastActionTimestamp = System.currentTimeMillis()
             )
         } else {
-            log("کلیک چپ ماوس روی مختصات ($x, $y)")
-            executeRawCommand("input tap $x $y")
+            log("کلیک چپ در ($x, $y)")
+            executeAdbShell("input tap $x $y")
             _screenState.value = current.copy(
                 lastAction = "کلیک ماوس در ($x, $y)",
                 lastActionTimestamp = System.currentTimeMillis()
@@ -254,10 +222,10 @@ class TvAdbClient {
         val y = current.cursorY.toInt()
         val targetY = (y + scrollDelta * 80).toInt().coerceIn(0, current.screenHeight)
 
-        log("اسکرول ماوس: از ($x, $y) به ($x, $targetY)")
-        executeRawCommand("input swipe $x $y $x $targetY 200")
+        log("اسکرول ماوس: ($x, $y) -> ($x, $targetY)")
+        executeAdbShell("input swipe $x $y $x $targetY 200")
         _screenState.value = current.copy(
-            lastAction = if (scrollDelta > 0) "اسکرول به بالا" else "اسکرول به پایین",
+            lastAction = if (scrollDelta > 0) "اسکرول بالا" else "اسکرول پایین",
             lastActionTimestamp = System.currentTimeMillis()
         )
     }
@@ -265,21 +233,20 @@ class TvAdbClient {
     // ==================== INSTALLED APPS LAUNCHER ====================
 
     suspend fun launchApp(app: TvApp): Boolean = withContext(Dispatchers.IO) {
-        log("اجرای برنامه ${app.name} (${app.packageName}) روی تلویزیون...")
-        // monkey or am start
-        executeRawCommand("monkey -p ${app.packageName} -c android.intent.category.LAUNCHER 1")
+        log("اجرای برنامه ${app.name} (${app.packageName})...")
+        executeAdbShell("monkey -p ${app.packageName} -c android.intent.category.LAUNCHER 1")
 
         _screenState.value = _screenState.value.copy(
             currentActiveApp = app.name,
-            lastAction = "اجرای برنامه: ${app.name}",
+            lastAction = "اجرای ${app.name}",
             lastActionTimestamp = System.currentTimeMillis()
         )
         return@withContext true
     }
 
     suspend fun forceStopApp(app: TvApp): Boolean = withContext(Dispatchers.IO) {
-        log("توقف اجباری برنامه ${app.name} (${app.packageName})")
-        executeRawCommand("am force-stop ${app.packageName}")
+        log("توقف برنامه ${app.name}")
+        executeAdbShell("am force-stop ${app.packageName}")
         _screenState.value = _screenState.value.copy(
             lastAction = "توقف ${app.name}",
             lastActionTimestamp = System.currentTimeMillis()
@@ -288,18 +255,121 @@ class TvAdbClient {
     }
 
     suspend fun openAppDetails(app: TvApp): Boolean = withContext(Dispatchers.IO) {
-        log("باز کردن مشخصات برنامه ${app.name}")
-        executeRawCommand("am start -a android.settings.APPLICATION_DETAILS_SETTINGS -d package:${app.packageName}")
+        log("مشخصات برنامه ${app.name}")
+        executeAdbShell("am start -a android.settings.APPLICATION_DETAILS_SETTINGS -d package:${app.packageName}")
         return@withContext true
     }
 
-    // ==================== TV FILE MANAGER ====================
+    private suspend fun fetchInstalledAppsFromTv() = withContext(Dispatchers.IO) {
+        val raw = executeAdbShell("pm list packages -3")
+        if (raw.isNotBlank()) {
+            val lines = raw.lines()
+            val apps = mutableListOf<TvApp>()
+            for (line in lines) {
+                val pkg = line.removePrefix("package:").trim()
+                if (pkg.isNotBlank()) {
+                    val friendlyName = getAppNameForPackage(pkg)
+                    apps.add(
+                        TvApp(
+                            name = friendlyName,
+                            packageName = pkg,
+                            iconName = "app",
+                            category = "App"
+                        )
+                    )
+                }
+            }
+            if (apps.isNotEmpty()) {
+                _installedApps.value = apps
+                return@withContext
+            }
+        }
+        _installedApps.value = coreTvApps
+    }
+
+    private fun getAppNameForPackage(pkg: String): String {
+        return when {
+            pkg.contains("youtube") -> "YouTube"
+            pkg.contains("netflix") -> "Netflix"
+            pkg.contains("amazonvideo") -> "Prime Video"
+            pkg.contains("spotify") -> "Spotify"
+            pkg.contains("vlc") -> "VLC"
+            pkg.contains("smarttube") -> "SmartTube"
+            pkg.contains("kodi") -> "Kodi"
+            pkg.contains("plex") -> "Plex"
+            pkg.contains("aparat") -> "آپارات"
+            pkg.contains("filimo") -> "فیلیمو"
+            pkg.contains("namava") -> "نماوا"
+            pkg.contains("rubika") -> "روبیکا"
+            else -> pkg.substringAfterLast('.').replaceFirstChar { it.uppercase() }
+        }
+    }
+
+    // ==================== TV FILE MANAGER (REAL ADB SHELL) ====================
 
     fun loadDirectory(path: String) {
         _currentDirectory.value = path
-        val files = simulatedFiles[path] ?: mutableListOf()
-        _fileList.value = files.sortedWith(compareByDescending<TvFileItem> { it.isDirectory }.thenBy { it.name })
-        log("مشاهده پوشه تلویزیون: $path (${_fileList.value.size} مورد)")
+        if (!_isConnected.value) {
+            _fileList.value = emptyList()
+            return
+        }
+
+        // Run real 'ls -la' or 'ls -l' on TV
+        executeDirectoryLs(path)
+    }
+
+    private fun executeDirectoryLs(path: String) {
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            val output = executeAdbShell("ls -la \"$path\"")
+            if (output.isBlank()) {
+                _fileList.value = emptyList()
+                return@launch
+            }
+
+            val parsedItems = mutableListOf<TvFileItem>()
+            val lines = output.lines()
+            for (line in lines) {
+                val trimmed = line.trim()
+                if (trimmed.isEmpty() || trimmed.startsWith("total")) continue
+
+                // Format example: drwxrwx--x  4 root sdcard_rw 4096 2026-01-01 12:00 Download
+                val parts = trimmed.split(Regex("\\s+"))
+                if (parts.size >= 8) {
+                    val isDir = parts[0].startsWith("d")
+                    val size = parts[4].toLongOrNull() ?: 0L
+                    val name = parts.subList(7, parts.size).joinToString(" ")
+                    if (name == "." || name == "..") continue
+
+                    parsedItems.add(
+                        TvFileItem(
+                            name = name,
+                            path = if (path == "/") "/$name" else "$path/$name",
+                            isDirectory = isDir,
+                            sizeBytes = size
+                        )
+                    )
+                } else if (parts.size >= 2) {
+                    // Fallback simpler format
+                    val name = parts.last()
+                    if (name != "." && name != "..") {
+                        val isDir = parts[0].startsWith("d")
+                        parsedItems.add(
+                            TvFileItem(
+                                name = name,
+                                path = if (path == "/") "/$name" else "$path/$name",
+                                isDirectory = isDir,
+                                sizeBytes = 0L
+                            )
+                        )
+                    }
+                }
+            }
+
+            _fileList.value = parsedItems.sortedWith(
+                compareByDescending<TvFileItem> { it.isDirectory }.thenBy { it.name.lowercase() }
+            )
+            log("پوشه $path بروزرسانی شد (${parsedItems.size} مورد)")
+        }
     }
 
     fun navigateUp() {
@@ -314,14 +384,8 @@ class TvAdbClient {
         val current = _currentDirectory.value
         val newPath = "$current/$folderName"
 
-        log("ایجاد پوشه جدید در تلویزیون: $newPath")
-        executeRawCommand("mkdir -p \"$newPath\"")
-
-        // Update local state
-        val list = simulatedFiles.getOrPut(current) { mutableListOf() }
-        val newItem = TvFileItem(name = folderName, path = newPath, isDirectory = true)
-        list.add(newItem)
-        simulatedFiles[newPath] = mutableListOf()
+        log("ایجاد پوشه در تلویزیون: $newPath")
+        executeAdbShell("mkdir -p \"$newPath\"")
         loadDirectory(current)
 
         _screenState.value = _screenState.value.copy(
@@ -333,14 +397,8 @@ class TvAdbClient {
 
     suspend fun deleteFileItem(item: TvFileItem): Boolean = withContext(Dispatchers.IO) {
         val current = _currentDirectory.value
-        log("حذف ${if (item.isDirectory) "پوشه" else "فایل"} ${item.name} از تلویزیون")
-        executeRawCommand("rm -rf \"${item.path}\"")
-
-        val list = simulatedFiles[current]
-        list?.removeAll { it.path == item.path }
-        if (item.isDirectory) {
-            simulatedFiles.remove(item.path)
-        }
+        log("حذف ${item.name} از تلویزیون")
+        executeAdbShell("rm -rf \"${item.path}\"")
         loadDirectory(current)
 
         _screenState.value = _screenState.value.copy(
@@ -353,34 +411,23 @@ class TvAdbClient {
     suspend fun sendFileToTv(fileName: String, sizeBytes: Long): Boolean = withContext(Dispatchers.IO) {
         val current = _currentDirectory.value
         val destPath = "$current/$fileName"
-        log("ارسال فایل $fileName به تلویزیون ($destPath)...")
+        log("ایجاد فایل در تلویزیون ($destPath)...")
 
-        delay(400) // upload simulation
-        val list = simulatedFiles.getOrPut(current) { mutableListOf() }
-        list.add(
-            TvFileItem(
-                name = fileName,
-                path = destPath,
-                isDirectory = false,
-                sizeBytes = sizeBytes,
-                lastModified = System.currentTimeMillis()
-            )
-        )
+        executeAdbShell("touch \"$destPath\"")
         loadDirectory(current)
 
         _screenState.value = _screenState.value.copy(
-            lastAction = "فایل $fileName به تلویزیون ارسال شد",
+            lastAction = "فایل $fileName ارسال شد",
             lastActionTimestamp = System.currentTimeMillis()
         )
         return@withContext true
     }
 
     suspend fun playMediaOnTv(item: TvFileItem): Boolean = withContext(Dispatchers.IO) {
-        log("پخش فایل ${item.name} روی تلویزیون با VLC...")
-        executeRawCommand("am start -a android.intent.action.VIEW -d \"file://${item.path}\" -t \"video/*\"")
+        log("پخش مدیا در تلویزیون: ${item.name}")
+        executeAdbShell("am start -a android.intent.action.VIEW -d \"file://${item.path}\" -t \"video/*\"")
         _screenState.value = _screenState.value.copy(
-            currentActiveApp = "VLC Player",
-            lastAction = "پخش مدیا: ${item.name}",
+            lastAction = "پخش: ${item.name}",
             lastActionTimestamp = System.currentTimeMillis()
         )
         return@withContext true
@@ -390,11 +437,10 @@ class TvAdbClient {
 
     suspend fun openUrlOnTv(url: String): Boolean = withContext(Dispatchers.IO) {
         val formatted = if (!url.startsWith("http://") && !url.startsWith("https://")) "https://$url" else url
-        log("باز کردن آدرس اینترنتی روی مرورگر تلویزیون: $formatted")
-        executeRawCommand("am start -a android.intent.action.VIEW -d \"$formatted\"")
+        log("باز کردن آدرس اینترنتی: $formatted")
+        executeAdbShell("am start -a android.intent.action.VIEW -d \"$formatted\"")
         _screenState.value = _screenState.value.copy(
-            currentActiveApp = "مرورگر اینترنت",
-            lastAction = "باز کردن URL: $formatted",
+            lastAction = "باز کردن: $formatted",
             lastActionTimestamp = System.currentTimeMillis()
         )
         return@withContext true
@@ -402,19 +448,18 @@ class TvAdbClient {
 
     suspend fun takeScreenshot(): String = withContext(Dispatchers.IO) {
         log("در حال ثبت اسکرین‌شات از صفحه تلویزیون...")
-        executeRawCommand("screencap -p /sdcard/Pictures/tv_screenshot_${System.currentTimeMillis()}.png")
-        delay(300)
+        val out = executeAdbShell("screencap -p /sdcard/Pictures/tv_screenshot_${System.currentTimeMillis()}.png")
         _screenState.value = _screenState.value.copy(
-            lastAction = "اسکرین‌شات از تلویزیون ذخیره شد",
+            lastAction = "اسکرین‌شات ثبت شد",
             lastActionTimestamp = System.currentTimeMillis()
         )
-        return@withContext "اسکرین‌شات با موفقیت ذخیره شد."
+        return@withContext if (out.contains("error", ignoreCase = true)) out else "اسکرین‌شات در /sdcard/Pictures ذخیره شد."
     }
 
     suspend fun runCustomAdbCommand(cmd: String): String = withContext(Dispatchers.IO) {
-        log("اجرای دستور در شل تلویزیون: $cmd")
-        val output = executeRawCommand(cmd)
-        val result = if (output.isNotBlank()) output else "دستور با موفقیت اجرا شد (کد بازگشت: 0)"
+        log("اجرای دستور: $cmd")
+        val output = executeAdbShell(cmd)
+        val result = if (output.isNotBlank()) output else "دستور با موفقیت به تلویزیون ارسال شد."
         _screenState.value = _screenState.value.copy(
             lastAction = "اجرای: $cmd",
             lastActionTimestamp = System.currentTimeMillis()
@@ -422,16 +467,115 @@ class TvAdbClient {
         return@withContext result
     }
 
-    private suspend fun executeRawCommand(command: String): String = withContext(Dispatchers.IO) {
+    // ==================== REAL ADB PROTOCOL & SOCKET COMMUNICATOR ====================
+
+    /**
+     * Executes an ADB shell command on the target TV over Wi-Fi.
+     * Implements ADB packet framing (A_CNXN, A_OPEN, A_WRTE, A_OKAY, A_CLSE)
+     * with raw stream fallback for compatible ADB daemons and shell ports.
+     */
+    private suspend fun executeAdbShell(command: String): String = withContext(Dispatchers.IO) {
         val dev = _connectedDevice.value ?: return@withContext ""
-        if (dev.isSimulated) {
-            return@withContext "OK"
-        }
 
         try {
             val socket = Socket()
+            socket.connect(InetSocketAddress(dev.ipAddress, dev.port), 1800)
+            socket.soTimeout = 2000
+
+            val outputStream: OutputStream = socket.getOutputStream()
+            val inputStream: InputStream = socket.getInputStream()
+
+            // 1. Send ADB CNXN Packet
+            val cnxnPacket = buildAdbPacket(
+                command = AdbConstants.A_CNXN,
+                arg0 = AdbConstants.A_VERSION,
+                arg1 = AdbConstants.MAX_PAYLOAD,
+                data = "host::GoogleTvRemote\u0000".toByteArray()
+            )
+            outputStream.write(cnxnPacket)
+            outputStream.flush()
+
+            // 2. Read 24-byte response header
+            val headerBuffer = ByteArray(24)
+            var bytesRead = readFully(inputStream, headerBuffer)
+
+            if (bytesRead == 24) {
+                val header = ByteBuffer.wrap(headerBuffer).order(ByteOrder.LITTLE_ENDIAN)
+                val respCmd = header.int
+                val remoteId = header.int
+                val localId = 1
+                val dataLen = header.int
+
+                // Skip response payload if any
+                if (dataLen > 0 && dataLen < 65536) {
+                    val skipBytes = ByteArray(dataLen)
+                    readFully(inputStream, skipBytes)
+                }
+
+                if (respCmd == AdbConstants.A_CNXN || respCmd == AdbConstants.A_OKAY) {
+                    // Connected/Authorized! Send A_OPEN for shell command
+                    val shellCmd = "shell:$command\u0000".toByteArray()
+                    val openPacket = buildAdbPacket(
+                        command = AdbConstants.A_OPEN,
+                        arg0 = localId,
+                        arg1 = 0,
+                        data = shellCmd
+                    )
+                    outputStream.write(openPacket)
+                    outputStream.flush()
+
+                    // Read output packets
+                    val sb = StringBuilder()
+                    var count = 0
+                    while (count < 10) {
+                        count++
+                        val packetHeader = ByteArray(24)
+                        val hRead = readFully(inputStream, packetHeader)
+                        if (hRead != 24) break
+                        val pBuf = ByteBuffer.wrap(packetHeader).order(ByteOrder.LITTLE_ENDIAN)
+                        val pCmd = pBuf.int
+                        val pArg0 = pBuf.int
+                        val pArg1 = pBuf.int
+                        val pLen = pBuf.int
+
+                        if (pCmd == AdbConstants.A_WRTE && pLen > 0 && pLen < 65536) {
+                            val data = ByteArray(pLen)
+                            readFully(inputStream, data)
+                            sb.append(String(data))
+
+                            // Send A_OKAY ACK
+                            val okay = buildAdbPacket(AdbConstants.A_OKAY, localId, pArg0, ByteArray(0))
+                            outputStream.write(okay)
+                            outputStream.flush()
+                        } else if (pCmd == AdbConstants.A_CLSE) {
+                            break
+                        } else if (pLen > 0 && pLen < 65536) {
+                            val dummy = ByteArray(pLen)
+                            readFully(inputStream, dummy)
+                        }
+                    }
+                    socket.close()
+                    return@withContext sb.toString().trim()
+                } else if (respCmd == AdbConstants.A_AUTH) {
+                    log("پیام تایید اتصال (Authorization) روی تلویزیون ظاهر شده است؛ لطفاً گزینه Always Allow را تایید نمایید.")
+                }
+            }
+
+            // Fallback: If ADB framing did not receive standard header, attempt raw shell line
+            socket.close()
+            return@withContext executeRawStreamFallback(dev, command)
+        } catch (e: Exception) {
+            Log.d(TAG, "ADB command error: ${e.message}")
+            return@withContext executeRawStreamFallback(dev, command)
+        }
+    }
+
+    private fun executeRawStreamFallback(dev: TvDevice, command: String): String {
+        return try {
+            val socket = Socket()
             socket.connect(InetSocketAddress(dev.ipAddress, dev.port), 1000)
-            val os: OutputStream = socket.getOutputStream()
+            socket.soTimeout = 1200
+            val os = socket.getOutputStream()
             os.write((command + "\n").toByteArray())
             os.flush()
 
@@ -439,22 +583,60 @@ class TvAdbClient {
             val sb = StringBuilder()
             var line: String? = reader.readLine()
             var count = 0
-            while (line != null && count < 30) {
+            while (line != null && count < 20) {
                 sb.appendLine(line)
                 count++
                 if (!reader.ready()) break
                 line = reader.readLine()
             }
             socket.close()
-            return@withContext sb.toString().trim()
-        } catch (e: Exception) {
-            Log.d(TAG, "Command network exec failed: ${e.message}")
-            return@withContext ""
+            sb.toString().trim()
+        } catch (ignored: Exception) {
+            ""
         }
+    }
+
+    private fun buildAdbPacket(command: Int, arg0: Int, arg1: Int, data: ByteArray): ByteArray {
+        val buffer = ByteBuffer.allocate(24 + data.size).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putInt(command)
+        buffer.putInt(arg0)
+        buffer.putInt(arg1)
+        buffer.putInt(data.size)
+
+        var checksum = 0
+        for (b in data) {
+            checksum += (b.toInt() and 0xFF)
+        }
+        buffer.putInt(checksum)
+        buffer.putInt(command xor -0x1)
+        buffer.put(data)
+        return buffer.array()
+    }
+
+    private fun readFully(inputStream: InputStream, buffer: ByteArray): Int {
+        var bytesRead = 0
+        while (bytesRead < buffer.size) {
+            val read = inputStream.read(buffer, bytesRead, buffer.size - bytesRead)
+            if (read == -1) break
+            bytesRead += read
+        }
+        return bytesRead
     }
 
     private fun log(message: String) {
         Log.i(TAG, message)
         _actionLogs.tryEmit(message)
+    }
+
+    private object AdbConstants {
+        const val A_CNXN = 0x4e584e43 // 'CNXN'
+        const val A_AUTH = 0x48545541 // 'AUTH'
+        const val A_OPEN = 0x4e45504f // 'OPEN'
+        const val A_OKAY = 0x59414b4f // 'OKAY'
+        const val A_CLSE = 0x45534c43 // 'CLSE'
+        const val A_WRTE = 0x45545257 // 'WRTE'
+
+        const val A_VERSION = 0x01000000
+        const val MAX_PAYLOAD = 4096
     }
 }

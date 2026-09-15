@@ -79,6 +79,8 @@ import com.example.util.LocalLiteMode
 fun FilesScreen(
     currentDirectory: String,
     files: List<TvFileItem>,
+    isConnected: Boolean = true,
+    onConnectClick: () -> Unit = {},
     onNavigateFolder: (String) -> Unit,
     onNavigateUp: () -> Unit,
     onCreateFolder: (String) -> Unit,
@@ -100,6 +102,47 @@ fun FilesScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        if (!isConnected) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Slate850)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Folder,
+                        contentDescription = null,
+                        tint = CyanAccent,
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Text(
+                        text = strings.filesNotConnectedTitle,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                    Text(
+                        text = strings.filesNotConnectedDesc,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Slate400,
+                        modifier = Modifier.padding(horizontal = 12.dp)
+                    )
+                    Button(
+                        onClick = onConnectClick,
+                        colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = Slate950),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(strings.connectToTv, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
         // Storage Status Card
         Card(
             modifier = Modifier.fillMaxWidth(),

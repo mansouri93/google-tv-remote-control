@@ -16,14 +16,22 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.net.InetAddress
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.Inet4Address
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.Socket
+import java.net.URL
+import java.util.Collections
 
 class TvDiscoveryService(private val context: Context) {
 
     private val TAG = "TvDiscoveryService"
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
+    private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
 
     private val _discoveredDevices = MutableStateFlow<List<TvDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<TvDevice>> = _discoveredDevices.asStateFlow()
@@ -34,80 +42,78 @@ class TvDiscoveryService(private val context: Context) {
     private val _scanProgress = MutableStateFlow(0f)
     val scanProgress: StateFlow<Float> = _scanProgress.asStateFlow()
 
+    private val _currentSubnet = MutableStateFlow<String?>(null)
+    val currentSubnet: StateFlow<String?> = _currentSubnet.asStateFlow()
+
     private var scanJob: Job? = null
     private var nsdListener: NsdManager.DiscoveryListener? = null
-
-    // Pre-seeded standard TV presets for instant discovery / testing
-    private val defaultDevices = listOf(
-        TvDevice(
-            id = "sim_living_room",
-            name = "تلویزیون گوگل تی‌وی پذیرایی",
-            ipAddress = "192.168.1.105",
-            port = 5555,
-            model = "Sony BRAVIA 4K (Google TV)",
-            isOnline = true,
-            latencyMs = 8L,
-            isFavorite = true,
-            isSimulated = true
-        ),
-        TvDevice(
-            id = "sim_bedroom",
-            name = "کروم‌کست اتاق خواب",
-            ipAddress = "192.168.1.120",
-            port = 5555,
-            model = "Chromecast with Google TV (4K)",
-            isOnline = true,
-            latencyMs = 15L,
-            isFavorite = false,
-            isSimulated = true
-        ),
-        TvDevice(
-            id = "sim_xiaomi",
-            name = "شیائومی تی‌وی باکس",
-            ipAddress = "192.168.1.145",
-            port = 5555,
-            model = "Xiaomi TV Box S (2nd Gen)",
-            isOnline = true,
-            latencyMs = 19L,
-            isFavorite = false,
-            isSimulated = true
-        )
-    )
-
-    init {
-        _discoveredDevices.value = defaultDevices
-    }
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     fun startDiscovery() {
         if (_isScanning.value) return
         _isScanning.value = true
         _scanProgress.value = 0.05f
 
+        acquireMulticastLock()
+
         scanJob?.cancel()
         scanJob = CoroutineScope(Dispatchers.IO).launch {
-            // 1. Start mDNS discovery via NsdManager
-            startNsd()
+            try {
+                // 1. Start mDNS discovery via NsdManager for Google Cast / Android TV
+                startNsd()
 
-            // 2. Scan local WiFi subnet for ADB port 5555 / Cast port 8008 / Google TV remote port 6466
-            val subnetPrefix = getLocalSubnetPrefix()
-            scanSubnet(subnetPrefix)
+                // 2. Detect actual local network interface IPv4 prefix
+                val (localIp, prefix) = getLocalIpAndSubnet()
+                _currentSubnet.value = localIp
+                Log.d(TAG, "Local IP detected: $localIp, Scanning subnet: $prefix.*")
 
-            _isScanning.value = false
-            _scanProgress.value = 1f
+                // 3. Scan local Wi-Fi subnet for real TVs (Port 5555 for ADB, 8008 for Cast/DIAL, 6466 for Remote v2)
+                scanSubnet(prefix)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in discovery process: ${e.message}")
+            } finally {
+                _isScanning.value = false
+                _scanProgress.value = 1f
+                releaseMulticastLock()
+            }
         }
     }
 
     fun stopDiscovery() {
         scanJob?.cancel()
         stopNsd()
+        releaseMulticastLock()
         _isScanning.value = false
+    }
+
+    private fun acquireMulticastLock() {
+        try {
+            if (multicastLock == null) {
+                multicastLock = wifiManager?.createMulticastLock("TvDiscoveryMulticastLock")?.apply {
+                    setReferenceCounted(true)
+                }
+            }
+            multicastLock?.acquire()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire multicast lock: ${e.message}")
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        try {
+            if (multicastLock?.isHeld == true) {
+                multicastLock?.release()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release multicast lock: ${e.message}")
+        }
     }
 
     private fun startNsd() {
         try {
             val listener = object : NsdManager.DiscoveryListener {
                 override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {
-                    Log.e(TAG, "Discovery start failed: $errorCode")
+                    Log.e(TAG, "NSD Discovery start failed: $errorCode")
                 }
 
                 override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {}
@@ -125,7 +131,6 @@ class TvDiscoveryService(private val context: Context) {
                 override fun onServiceLost(serviceInfo: NsdServiceInfo?) {}
             }
             nsdListener = listener
-            // Look for Google Cast / Android TV services
             nsdManager?.discoverServices("_googlecast._tcp", NsdManager.PROTOCOL_DNS_SD, listener)
         } catch (e: Exception) {
             Log.w(TAG, "NSD error: ${e.message}")
@@ -135,24 +140,26 @@ class TvDiscoveryService(private val context: Context) {
     private fun resolveService(serviceInfo: NsdServiceInfo) {
         try {
             nsdManager?.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {}
+                override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
+                    Log.d(TAG, "NSD Resolve failed: $errorCode")
+                }
 
                 override fun onServiceResolved(resolvedInfo: NsdServiceInfo?) {
-                    resolvedInfo?.host?.hostAddress?.let { ip ->
-                        val devName = resolvedInfo.serviceName ?: "Google TV ($ip)"
-                        addOrUpdateDevice(
-                            TvDevice(
-                                id = "nsd_$ip",
-                                name = devName,
-                                ipAddress = ip,
-                                port = 5555,
-                                model = "Android TV / Google TV",
-                                isOnline = true,
-                                latencyMs = 10L,
-                                isSimulated = false
-                            )
+                    val hostAddress = resolvedInfo?.host?.hostAddress ?: return
+                    val serviceName = resolvedInfo.serviceName ?: "Google TV"
+                    val cleanName = if (serviceName.contains("-")) serviceName.substringBefore("-").trim() else serviceName
+                    addOrUpdateDevice(
+                        TvDevice(
+                            id = "nsd_$hostAddress",
+                            name = cleanName,
+                            ipAddress = hostAddress,
+                            port = 5555,
+                            model = "Google TV / Android TV",
+                            isOnline = true,
+                            latencyMs = 8L,
+                            isSimulated = false
                         )
-                    }
+                    )
                 }
             })
         } catch (e: Exception) {
@@ -164,16 +171,14 @@ class TvDiscoveryService(private val context: Context) {
         nsdListener?.let {
             try {
                 nsdManager?.stopServiceDiscovery(it)
-            } catch (e: Exception) {
-                // Ignore
-            }
+            } catch (ignored: Exception) {}
         }
         nsdListener = null
     }
 
     private suspend fun scanSubnet(subnetPrefix: String) = withContext(Dispatchers.IO) {
         val candidateIps = (1..254).map { "$subnetPrefix.$it" }
-        val batchSize = 35
+        val batchSize = 32
 
         for (i in candidateIps.indices step batchSize) {
             val batch = candidateIps.subList(i, minOf(i + batchSize, candidateIps.size))
@@ -191,50 +196,125 @@ class TvDiscoveryService(private val context: Context) {
     }
 
     private fun checkDeviceAtIp(ip: String): TvDevice? {
-        // Ports: 5555 (ADB Wireless), 6466 (Google TV pairing), 8008 (Google Cast)
-        val portsToCheck = listOf(5555, 6466, 8008)
-        for (port in portsToCheck) {
-            try {
-                val socket = Socket()
-                val startTime = System.currentTimeMillis()
-                socket.connect(InetSocketAddress(ip, port), 120)
-                val latency = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
-                socket.close()
-
-                return TvDevice(
-                    id = "lan_$ip",
-                    name = "تلویزیون در $ip",
-                    ipAddress = ip,
-                    port = 5555,
-                    model = if (port == 5555) "Google TV (ADB فعال)" else "Google TV / Cast",
-                    isOnline = true,
-                    latencyMs = latency,
-                    isSimulated = false
-                )
-            } catch (ignored: Exception) {
-                // Not responding on this port
-            }
+        // 1. Check Port 5555 (ADB Wireless Debugging)
+        val adbLatency = testPort(ip, 5555, timeoutMs = 180)
+        if (adbLatency >= 0) {
+            val realName = queryCastInfo(ip)?.first ?: "Google TV ($ip)"
+            val realModel = queryCastInfo(ip)?.second ?: "Google TV (ADB: 5555)"
+            return TvDevice(
+                id = "lan_$ip",
+                name = realName,
+                ipAddress = ip,
+                port = 5555,
+                model = realModel,
+                isOnline = true,
+                latencyMs = adbLatency,
+                isSimulated = false
+            )
         }
+
+        // 2. Check Port 8008 (Google Cast / DIAL REST API)
+        val castLatency = testPort(ip, 8008, timeoutMs = 150)
+        if (castLatency >= 0) {
+            val castInfo = queryCastInfo(ip)
+            val devName = castInfo?.first ?: "Google TV ($ip)"
+            val devModel = castInfo?.second ?: "Chromecast / Google TV"
+            return TvDevice(
+                id = "lan_$ip",
+                name = devName,
+                ipAddress = ip,
+                port = 5555,
+                model = devModel,
+                isOnline = true,
+                latencyMs = castLatency,
+                isSimulated = false
+            )
+        }
+
+        // 3. Check Port 6466 (Google TV Remote v2 Service)
+        val remoteLatency = testPort(ip, 6466, timeoutMs = 150)
+        if (remoteLatency >= 0) {
+            return TvDevice(
+                id = "lan_$ip",
+                name = "Google TV ($ip)",
+                ipAddress = ip,
+                port = 5555,
+                model = "Google TV Remote v2",
+                isOnline = true,
+                latencyMs = remoteLatency,
+                isSimulated = false
+            )
+        }
+
         return null
     }
 
-    private fun getLocalSubnetPrefix(): String {
-        try {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            val ipInt = wifiManager?.connectionInfo?.ipAddress ?: 0
-            if (ipInt != 0) {
-                val ip = String.format(
-                    "%d.%d.%d",
-                    ipInt and 0xff,
-                    ipInt shr 8 and 0xff,
-                    ipInt shr 16 and 0xff
-                )
-                return ip
+    private fun testPort(ip: String, port: Int, timeoutMs: Int): Long {
+        return try {
+            val socket = Socket()
+            val startTime = System.currentTimeMillis()
+            socket.connect(InetSocketAddress(ip, port), timeoutMs)
+            val latency = (System.currentTimeMillis() - startTime).coerceAtLeast(1)
+            socket.close()
+            latency
+        } catch (e: Exception) {
+            -1L
+        }
+    }
+
+    private fun queryCastInfo(ip: String): Pair<String, String>? {
+        return try {
+            val url = URL("http://$ip:8008/setup/eureka_info")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.connectTimeout = 800
+            conn.readTimeout = 800
+            conn.requestMethod = "GET"
+            if (conn.responseCode == 200) {
+                val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                val response = reader.readText()
+                reader.close()
+                conn.disconnect()
+
+                val json = JSONObject(response)
+                val name = json.optString("name", "Google TV")
+                val model = json.optString("model_name", "Google TV / Chromecast")
+                Pair(name, model)
+            } else {
+                conn.disconnect()
+                null
             }
         } catch (e: Exception) {
-            // Fallback
+            null
         }
-        return "192.168.1"
+    }
+
+    /**
+     * Determines real local IPv4 address and /24 subnet prefix using NetworkInterface.
+     * Works on all Android versions without requiring location permission.
+     */
+    private fun getLocalIpAndSubnet(): Pair<String, String> {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            if (interfaces != null) {
+                for (intf in Collections.list(interfaces)) {
+                    if (!intf.isUp || intf.isLoopback) continue
+                    for (addr in Collections.list(intf.inetAddresses)) {
+                        if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                            val host = addr.hostAddress ?: continue
+                            if (host.startsWith("127.")) continue
+                            val parts = host.split(".")
+                            if (parts.size == 4) {
+                                val prefix = "${parts[0]}.${parts[1]}.${parts[2]}"
+                                return Pair(host, prefix)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error enumerating network interfaces: ${e.message}")
+        }
+        return Pair("192.168.1.1", "192.168.1")
     }
 
     private fun addOrUpdateDevice(newDevice: TvDevice) {
@@ -249,12 +329,13 @@ class TvDiscoveryService(private val context: Context) {
     }
 
     fun addManualDevice(name: String, ipAddress: String, port: Int = 5555): TvDevice {
+        val cleanIp = ipAddress.trim()
         val device = TvDevice(
-            id = "manual_$ipAddress",
-            name = name.ifBlank { "Google TV ($ipAddress)" },
-            ipAddress = ipAddress.trim(),
+            id = "manual_$cleanIp",
+            name = name.ifBlank { "Google TV ($cleanIp)" },
+            ipAddress = cleanIp,
             port = port,
-            model = "گوگل تی‌وی دستی",
+            model = "Google TV (اتصال دستی)",
             isOnline = true,
             latencyMs = 12L,
             isFavorite = true,

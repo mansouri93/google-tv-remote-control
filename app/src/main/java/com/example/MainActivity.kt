@@ -50,8 +50,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -146,6 +148,7 @@ fun MainAppScreen(viewModel: TvRemoteViewModel) {
     }
 
     CompositionLocalProvider(
+        LocalLayoutDirection provides (if (appLanguage == AppLanguage.FA) LayoutDirection.Rtl else LayoutDirection.Ltr),
         LocalAppLanguage provides appLanguage,
         LocalAppStrings provides strings,
         LocalLiteMode provides isLiteMode
@@ -282,6 +285,8 @@ fun MainAppScreen(viewModel: TvRemoteViewModel) {
                         FilesScreen(
                             currentDirectory = currentDirectory,
                             files = fileList,
+                            isConnected = isConnected,
+                            onConnectClick = { viewModel.toggleDeviceSheet(true) },
                             onNavigateFolder = { viewModel.navigateFolder(it) },
                             onNavigateUp = { viewModel.navigateUp() },
                             onCreateFolder = { viewModel.createFolder(it) },

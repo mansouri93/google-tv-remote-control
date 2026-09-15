@@ -57,6 +57,7 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
 
     private val db = AppTvDatabase.getDatabase(application)
     private val dao = db.tvDeviceDao()
+    private val prefs = com.example.data.TvPreferences(application)
 
     val discoveryService = TvDiscoveryService(application)
     val adbClient = TvAdbClient()
@@ -73,15 +74,15 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
     private val _currentTab = MutableStateFlow(RemoteTab.REMOTE)
     val currentTab: StateFlow<RemoteTab> = _currentTab.asStateFlow()
 
-    // Bilingual (FA / EN)
-    private val _appLanguage = MutableStateFlow(AppLanguage.FA)
+    // Bilingual (FA / EN) - Persisted
+    private val _appLanguage = MutableStateFlow(prefs.language)
     val appLanguage: StateFlow<AppLanguage> = _appLanguage.asStateFlow()
 
-    // Performance Mode for Low-End Smartphones (Defaults to true for buttery-smooth experience)
-    private val _isLiteMode = MutableStateFlow(true)
+    // Performance Mode for Low-End Smartphones - Persisted
+    private val _isLiteMode = MutableStateFlow(prefs.isLiteMode)
     val isLiteMode: StateFlow<Boolean> = _isLiteMode.asStateFlow()
 
-    private val _mouseSensitivity = MutableStateFlow(1.2f)
+    private val _mouseSensitivity = MutableStateFlow(prefs.mouseSensitivity)
     val mouseSensitivity: StateFlow<Float> = _mouseSensitivity.asStateFlow()
 
     private val _keyboardInputText = MutableStateFlow("")
@@ -93,7 +94,7 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
     private val _showHelpDialog = MutableStateFlow(false)
     val showHelpDialog: StateFlow<Boolean> = _showHelpDialog.asStateFlow()
 
-    private val _showTvMonitor = MutableStateFlow(true)
+    private val _showTvMonitor = MutableStateFlow(prefs.showTvMonitor)
     val showTvMonitor: StateFlow<Boolean> = _showTvMonitor.asStateFlow()
 
     private val _appsSearchQuery = MutableStateFlow("")
@@ -105,10 +106,10 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
     private val _terminalOutput = MutableStateFlow("ترمینال آماده است. دستور ADB یا شل را وارد کنید.\nTerminal ready. Enter ADB or shell command.\n")
     val terminalOutput: StateFlow<String> = _terminalOutput.asStateFlow()
 
-    private val _gamepadControlMode = MutableStateFlow(GamepadControlMode.DPAD)
+    private val _gamepadControlMode = MutableStateFlow(prefs.gamepadControlMode)
     val gamepadControlMode: StateFlow<GamepadControlMode> = _gamepadControlMode.asStateFlow()
 
-    private val _isTurboEnabled = MutableStateFlow(false)
+    private val _isTurboEnabled = MutableStateFlow(prefs.isTurboEnabled)
     val isTurboEnabled: StateFlow<Boolean> = _isTurboEnabled.asStateFlow()
 
     private val _toastMessage = MutableStateFlow<String?>(null)
@@ -121,11 +122,23 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
     )
 
     init {
-        // Auto connect to first simulated TV so app is immediately usable
-        viewModelScope.launch {
-            val firstDev = discoveryService.discoveredDevices.value.firstOrNull()
-            if (firstDev != null) {
-                adbClient.connect(firstDev)
+        // Start Wi-Fi discovery for real devices on local network
+        discoveryService.startDiscovery()
+
+        // If user previously connected to a real TV, attempt reconnect
+        val lastIp = prefs.lastConnectedIp
+        if (!lastIp.isNullOrBlank()) {
+            val savedDev = TvDevice(
+                id = "saved_$lastIp",
+                name = prefs.lastConnectedName ?: "Google TV",
+                ipAddress = lastIp,
+                port = prefs.lastConnectedPort,
+                model = prefs.lastConnectedModel,
+                isOnline = true,
+                isSimulated = false
+            )
+            viewModelScope.launch {
+                adbClient.connect(savedDev)
             }
         }
     }
@@ -137,6 +150,7 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
 
     fun setMouseSensitivity(value: Float) {
         _mouseSensitivity.value = value
+        prefs.mouseSensitivity = value
     }
 
     fun setKeyboardInput(text: String) {
@@ -152,17 +166,22 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun toggleLanguage() {
-        _appLanguage.value = if (_appLanguage.value == AppLanguage.FA) AppLanguage.EN else AppLanguage.FA
+        val newLang = if (_appLanguage.value == AppLanguage.FA) AppLanguage.EN else AppLanguage.FA
+        _appLanguage.value = newLang
+        prefs.language = newLang
     }
 
     fun setLanguage(lang: AppLanguage) {
         _appLanguage.value = lang
+        prefs.language = lang
     }
 
     fun toggleLiteMode() {
-        _isLiteMode.value = !_isLiteMode.value
+        val newMode = !_isLiteMode.value
+        _isLiteMode.value = newMode
+        prefs.isLiteMode = newMode
         val isFa = _appLanguage.value == AppLanguage.FA
-        _toastMessage.value = if (_isLiteMode.value) {
+        _toastMessage.value = if (newMode) {
             if (isFa) "حالت روان برای گوشی‌های ضعیف فعال شد" else "Smooth Lite Mode enabled for low-end devices"
         } else {
             if (isFa) "حالت گرافیک استاندارد فعال شد" else "Standard visual mode enabled"
@@ -178,7 +197,9 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun toggleTvMonitor() {
-        _showTvMonitor.value = !_showTvMonitor.value
+        val newVal = !_showTvMonitor.value
+        _showTvMonitor.value = newVal
+        prefs.showTvMonitor = newVal
     }
 
     fun clearToast() {
@@ -202,6 +223,11 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
                         isFavorite = device.isFavorite
                     )
                 )
+                prefs.lastConnectedIp = device.ipAddress
+                prefs.lastConnectedName = device.name
+                prefs.lastConnectedPort = device.port
+                prefs.lastConnectedModel = device.model
+
                 _toastMessage.value = if (isFa) "متصل شد به ${device.name}" else "Connected to ${device.name}"
                 _showDeviceSheet.value = false
             } else {
@@ -213,6 +239,7 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
     fun disconnect() {
         vibrateClick()
         adbClient.disconnect()
+        prefs.lastConnectedIp = null
         val isFa = _appLanguage.value == AppLanguage.FA
         _toastMessage.value = if (isFa) "اتصال قطع شد" else "Disconnected"
     }
@@ -232,6 +259,7 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
     fun setGamepadControlMode(mode: GamepadControlMode) {
         vibrateClick()
         _gamepadControlMode.value = mode
+        prefs.gamepadControlMode = mode
         val isFa = _appLanguage.value == AppLanguage.FA
         _toastMessage.value = when (mode) {
             GamepadControlMode.DPAD -> if (isFa) "حالت کلیدهای ۴ جهته (D-Pad) فعال شد" else "4-Way D-Pad mode activated"
@@ -241,9 +269,11 @@ class TvRemoteViewModel(application: Application) : AndroidViewModel(application
 
     fun toggleTurbo() {
         vibrateClick()
-        _isTurboEnabled.value = !_isTurboEnabled.value
+        val newTurbo = !_isTurboEnabled.value
+        _isTurboEnabled.value = newTurbo
+        prefs.isTurboEnabled = newTurbo
         val isFa = _appLanguage.value == AppLanguage.FA
-        _toastMessage.value = if (_isTurboEnabled.value) {
+        _toastMessage.value = if (newTurbo) {
             if (isFa) "حالت توربو (شلیک رگباری) فعال شد" else "Turbo rapid-fire activated"
         } else {
             if (isFa) "حالت توربو غیرفعال شد" else "Turbo deactivated"

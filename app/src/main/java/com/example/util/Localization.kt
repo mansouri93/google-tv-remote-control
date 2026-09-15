@@ -132,6 +132,9 @@ data class AppStrings(
     val fileDeleted: String,
     val fileUploaded: String,
     val playingOnTv: String,
+    val filesNotConnectedTitle: String,
+    val filesNotConnectedDesc: String,
+    val connectToTv: String,
 
     // Tools Screen
     val toolsTitle: String,
@@ -174,6 +177,8 @@ data class AppStrings(
     val manualIpLabel: String,
     val manualPortLabel: String,
     val directConnect: String,
+    val noDevicesFound: String,
+    val savedDevicesSection: String,
 
     // Setup Help Dialog
     val helpDialogTitle: String,
@@ -341,6 +346,9 @@ val PersianStrings = AppStrings(
     fileDeleted = "حذف شد",
     fileUploaded = "فایل با موفقیت به تلویزیون ارسال شد",
     playingOnTv = "در حال پخش روی تلویزیون",
+    filesNotConnectedTitle = "تلویزیون متصل نیست",
+    filesNotConnectedDesc = "جهت مشاهده فایل‌ها، ویدیوها و مدیریت حافظه تلویزیون، ابتدا تلویزیون خود را از بالای صفحه یا دکمه زیر متصل کنید.",
+    connectToTv = "اتصال به تلویزیون",
 
     toolsTitle = "جعبه‌ابزار پیشرفته تلویزیون",
     toolsSubtitle = "ارسال لینک اینترنتی، اسکرین‌شات، تایمر خواب و ترمینال ADB شل",
@@ -381,6 +389,8 @@ val PersianStrings = AppStrings(
     manualIpLabel = "آدرس IP تلویزیون",
     manualPortLabel = "پورت (پیش‌فرض ۵۵۵۵)",
     directConnect = "اتصال مستقیم",
+    noDevicesFound = "هیچ تلویزیونی به صورت خودکار یافت نشد. با دکمه اتصال دستی می‌توانید IP تلویزیون را وارد کنید.",
+    savedDevicesSection = "تلویزیون‌های ذخیره‌شده",
 
     helpDialogTitle = "راهنمای فعال‌سازی اتصال مستقیم تلویزیون",
     helpDialogDescription = "برای کنترل کامل موس، کیبورد، برنامه‌ها و فایل‌ها، قابلیت عیب‌یابی شبکه را روی گوگل تی‌وی فعال کنید:",
@@ -509,6 +519,9 @@ val EnglishStrings = AppStrings(
     fileDeleted = "Deleted",
     fileUploaded = "File sent to TV successfully",
     playingOnTv = "Playing on TV",
+    filesNotConnectedTitle = "TV Not Connected",
+    filesNotConnectedDesc = "To view files, browse storage, or play media, connect to your TV using the top header or the button below.",
+    connectToTv = "Connect to TV",
 
     toolsTitle = "Advanced TV Toolbox",
     toolsSubtitle = "Send Web URLs, take screenshots, sleep timer, and ADB Shell terminal",
@@ -549,6 +562,8 @@ val EnglishStrings = AppStrings(
     manualIpLabel = "TV IP Address",
     manualPortLabel = "Port (Default: 5555)",
     directConnect = "Direct Connect",
+    noDevicesFound = "No TVs detected automatically. You can use 'Connect via Manual IP' to enter your TV's IP address.",
+    savedDevicesSection = "Saved Devices",
 
     helpDialogTitle = "Google TV Direct Connection Setup Guide",
     helpDialogDescription = "To enable full mouse, keyboard, app launcher and file management, turn on Network Debugging on your Google TV:",
