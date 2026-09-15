@@ -1,0 +1,7 @@
+{
+  "name": "Google TV Remote",
+  "description": "کنترل هوشمند گوگل تی‌وی با دسته بازی (Gamepad/جویستیک)، ماوس واقعی، کیبورد، لانچر برنامه‌ها، مدیریت فایل و اتصال مستقیم وای‌فای",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
